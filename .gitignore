@@ -2,3 +2,11 @@
 *.swp
 .*~
 .*.swp
+
+*.zip
+*.tar.gz
+*.tar.bz
+*.tar.bz2
+
+__pycache__/
+Data/
