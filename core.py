@@ -58,7 +58,7 @@ def readEnrollFile(pathname):
 
 
 def writeFeatureFile(pathname, features):
-    features.sort(key=lambda x: x[0])
+    features.sort(key=lambda x: int(x[0]))
     with open(pathname, 'wt') as fp:
         cWriter = csv.writer(fp)
         for feature in features:
