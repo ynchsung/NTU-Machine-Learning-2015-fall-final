@@ -15,7 +15,7 @@ class Course():
             self.category_buckets[module.getCategory()] = dict()
         self.category_buckets[module.getCategory()][module.getID()] = module
 
-    def getCourseModule(self, mid):
+    def getCourseModuleByID(self, mid):
         return self.modules.get(mid, None)
 
     def getCategoryModuleSize(self, cate):
