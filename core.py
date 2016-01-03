@@ -24,10 +24,10 @@ class Core():
             module.BuildChildrenRef(self.modules)
 
     def getModuleByID(self, m_id):
-        return self.modules.get(m_id, default=None)
+        return self.modules.get(m_id, None)
 
     def getCourseByID(self, c_id):
-        return self.courses.get(c_id, default=None)
+        return self.courses.get(c_id, None)
 
 
 def main():
