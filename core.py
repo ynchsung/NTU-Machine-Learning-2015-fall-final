@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import csv
+import statistics
 from datetime import datetime
 from Course import Course
 from Module import Module
@@ -72,11 +73,11 @@ def convertDateTime(str_dt):
     return dt_obj.timestamp()
 
 
-def appendFeatures(core, ori_path, log_path, enroll_path, dest_path):
+def appendFeatures(core, ori_path, log_path, enroll_path, dst_path):
     features = readFeatureFile(ori_path)
     logs = readLogFile(log_path)
     enrolls = readEnrollFile(enroll_path)
-    new_features = dict([(a, b + [0.0, 0.0, 0.0, 0.0]) \
+    new_features = dict([(a, b + [0.0] * 7) \
                                     for (a, b) in features.items()])
 
     course_start_time = dict()
@@ -92,46 +93,75 @@ def appendFeatures(core, ori_path, log_path, enroll_path, dest_path):
                     course_start_time[course_id] = this_time
 
     miss = 0
-    cnt = 0
     for enroll in enrolls:
         enroll_id = enroll['enrollment_id']
         course_id = enroll['course_id']
         course_obj = core.getCourseByID(course_id)
+        start_time = course_start_time.get(course_id, 0.0)
+
+        # new feature 1: duration
+        # the distance between last log time and course start time
+        duration = 0.0
+        # new feature 2: variance
+        # the variance of the distance between each log and course start time
+        stat = []
+        # new feature 3~5: portion of video, vertical, sequential log
         sets = {
             'sequential': set(),
             'vertical': set(),
             'video': set(),
         }
-
-        for i in range(len(logs[enroll_id]) - 1, -1, -1):
-            module_obj = core.getModuleByID(logs[enroll_id][i]['object'])
-            if module_obj and module_obj.getCourseID() == course_id:
-                new_features[enroll_id][-1] = \
-                        convertDateTime(logs[enroll_id][i]['time']) - \
-                        course_start_time.get(course_id, 0)
-                if cnt < 20:
-                    print('%f %f'%(course_start_time.get(course_id, 0),\
-                        convertDateTime(logs[enroll_id][i]['time'])))
-                cnt += 1
-                break
+        # new feature 6: score
+        # 1pt for access event, 2pt for nagivate event, 3pt for problem event
+        score = 0.0
+        # new feature 7: total learning time
+        last_timestamp = None
+        tot_time = 0.0
 
         for log in logs[enroll_id]:
             module_id = log['object']
             module_obj = course_obj.getCourseModuleByID(module_id)
+
             if module_obj and (module_obj.getCategory() in sets):
                 sets[module_obj.getCategory()].add(module_id)
+            if module_obj:
+                now_timestamp = convertDateTime(log['time'])
+                delta = now_timestamp - start_time
+                stat.append(delta)
+                duration = delta
+
+                if log['event'] == 'access':
+                    score += 1.0
+                elif log['event'] == 'nagivate':
+                    score += 2.0
+                elif log['event'] == 'problem':
+                    score += 3.0
+
+                if last_timestamp is None:
+                    if log['event'] != 'page_close':
+                        last_timestamp = now_timestamp
+                elif log['event'] == 'page_close':
+                    tot_time += (now_timestamp - last_timestamp)
+                    last_timestamp = None
 
         if enroll_id in new_features:
-            new_features[enroll_id][-2] = float(len(sets['sequential'])) / \
+            new_features[enroll_id][-1] = tot_time
+            new_features[enroll_id][-2] = score
+            new_features[enroll_id][-3] = float(len(sets['sequential'])) / \
                                 course_obj.getCategoryModuleSize('sequential')
-            new_features[enroll_id][-3] = float(len(sets['vertical'])) / \
+            new_features[enroll_id][-4] = float(len(sets['vertical'])) / \
                                 course_obj.getCategoryModuleSize('vertical')
-            new_features[enroll_id][-4] = float(len(sets['video'])) / \
+            new_features[enroll_id][-5] = float(len(sets['video'])) / \
                                 course_obj.getCategoryModuleSize('video')
+            if len(stat) < 2:
+                new_features[enroll_id][-6] = 0.0
+            else:
+                new_features[enroll_id][-6] = statistics.variance(stat)
+            new_features[enroll_id][-7] = duration
         else:
             miss += 1
 
-    writeFeatureFile(dest_path, list(new_features.values()))
+    writeFeatureFile(dst_path, list(new_features.values()))
     print('Miss: %d'%(miss,))
 
 
@@ -142,9 +172,19 @@ def main():
     core = Core(obj_filepath)
     print('Done', file=sys.stderr)
 
+    '''
+    ori_path = 'Data/sample_train_x_1.csv'
+    log_path = 'Data/log_train.csv'
+    enroll_path = 'Data/enrollment_train.csv'
+    dst_path = 'Data/feature_train_new_time_variance_portion_score_totaltime_x.csv'
+    '''
+    ori_path = 'Data/sample_test_x.csv'
+    log_path = 'Data/log_test.csv'
+    enroll_path = 'Data/enrollment_test.csv'
+    dst_path = 'Data/feature_test_new_time_variance_portion_score_totaltime_x.csv'
+
     # appending new feature
-    appendFeatures(core, 'Data/sample_train_x_1.csv', 'Data/log_train.csv', \
-                    'Data/enrollment_train.csv', 'Data/feature_train2_x.csv')
+    appendFeatures(core, ori_path, log_path, enroll_path, dst_path)
 
 
 if __name__ == '__main__':
