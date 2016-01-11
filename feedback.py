@@ -61,6 +61,13 @@ def readEnrollFile(pathname):
     return ret
 
 
+def readTruthFile(pathname):
+    with open(pathname, 'rt') as fp:
+        cin = csv.reader(fp)
+        ret = dict([(row[0], int(row[1])) for row in cin])
+    return ret
+
+
 def writeFeatureFile(pathname, features):
     features.sort(key=lambda x: int(x[0]))
     with open(pathname, 'wt') as fp:
@@ -91,15 +98,14 @@ def binarySearchTime(lst, val, eq):
     return l
 
 
-def appendFeatures(core, ori_path, log_path, enroll_path, dst_path):
-    features = readFeatureFile(ori_path)
+def appendFeedback(core, ori_path, log_path, enroll_path, truth_path, dst_path):
     logs = readLogFile(log_path)
     enrolls = readEnrollFile(enroll_path)
-    new_features = dict([(a, b + [0.0] * 7) for (a, b) in features.items()])
+    truth = readTruthFile(truth_path)
 
     course_start_time = dict()
-    enroll_username = dict()    # map: (enroll_id -> username)
-    username_logs = dict()      # map: (username -> [logs])
+    enroll_dict = dict()    # map: (enroll_id -> enroll)
+    username_logs = dict()      # map: (username -> {enroll_id -> [logs]})
 
     for log_list in logs.values():
         for log in log_list:
@@ -114,92 +120,72 @@ def appendFeatures(core, ori_path, log_path, enroll_path, dst_path):
 
     for enroll in enrolls:
         if not enroll['username'] in username_logs:
-            username_logs[enroll['username']] = []
-        enroll_username[enroll['enrollment_id']] = enroll['username']
-
+            username_logs[enroll['username']] = dict()
+        enroll_dict[enroll['enrollment_id']] = enroll
     for (log_enroll_id, log_list) in logs.items():
-        this_username = enroll_username.get(log_enroll_id, None)
+        tmp_obj = enroll_dict.get(log_enroll_id, None)
+        if tmp_obj is None:
+            continue
+        this_username = tmp_obj['username']
         if this_username and this_username in username_logs:
-            username_logs[this_username] += log_list
+            if not log_enroll_id in username_logs[this_username]:
+                username_logs[this_username][log_enroll_id] = []
+            username_logs[this_username][log_enroll_id] += log_list
+    for user_logdict in username_logs.values():
+        for lst in user_logdict.values():
+            lst.sort(key=lambda x:x['time'])
 
-    for user_logs in username_logs.values():
-        user_logs.sort(key=lambda x:x['time'])
+    feedback_feature_lst = dict()
 
-    miss = 0
+    print('Start calculate')
+
     for enroll in enrolls:
         enroll_id = enroll['enrollment_id']
+        username = enroll['username']
         course_id = enroll['course_id']
         course_obj = core.getCourseByID(course_id)
         start_time = course_start_time.get(course_id, 0.0)
         thirtyone_time = start_time + 86400 * 30 + 1
         forty_time = start_time + 86400 * 40
 
-        # new feature 1: duration
-        # the distance between last log time and course start time
-        duration = 0.0
-        # new feature 2: variance
-        # the variance of the distance between each log and course start time
-        # new feature 3: mean
-        # the mean of the distance between each log and course start time
-        stat = []
-        # new feature 4~6: portion of video, vertical, sequential log
-        sets = {
-            'sequential': set(),
-            'vertical': set(),
-            'video': set(),
-        }
-        # new feature 7: 31 ~ 40 days number of other logs from same username
-        (idx1, idx2) = (0, 0)
-        # new feature 8: 31 ~ 40 days portion of feature 7 to all logs of the
-        #                user
-        userlog_portion = 0.0
+        # feedback feature
+        userlog_feedback_sum = 0.0
+        user_alllog = 0.0
+        if username in username_logs:
+            for (enroll_id2, log_lst) in username_logs[username].items():
+                user_alllog += len(log_lst)
+                if enroll_id == enroll_id2 or truth[enroll_id2] == 1:
+                    continue
+                enroll_obj = enroll_dict.get(enroll_id2, None)
+                assert(not enroll_obj is None)
+                username2 = enroll['username']
+                course_id2 = enroll_obj['course_id']
+                start_time2 = course_start_time.get(course_id2, 0.0)
+                thirtyone_time2 = start_time2 + 86400 * 30 + 1
+                forty_time2 = start_time2 + 86400 * 40
+                assert(username == username2)
 
-        if enroll['username'] in username_logs:
-            idx1 = binarySearchTime(username_logs[enroll['username']], \
-                                                        thirtyone_time, True)
-            idx2 = binarySearchTime(username_logs[enroll['username']], \
-                                                        forty_time, False)
-            if len(username_logs[enroll['username']]) > 0:
-                userlog_portion = float(max(0, idx2 - idx1)) / \
-                                        len(username_logs[enroll['username']])
+                idx1 = binarySearchTime(log_lst, thirtyone_time, True)
+                idx2 = binarySearchTime(log_lst, forty_time, False)
+                userlog_feedback_sum += max(idx2 - idx1, 0)
 
-        for log in logs[enroll_id]:
-            module_id = log['object']
-            module_obj = course_obj.getCourseModuleByID(module_id)
+                ll = max(thirtyone_time, thirtyone_time2)
+                rr = min(forty_time, forty_time2)
+                if rr - ll > 1e-4 and \
+                                log_lst[-1]['time'] - log_lst[0]['time'] > 1e-4:
+                    time_length = rr - ll
+                    density = len(log_lst) / \
+                                (log_lst[-1]['time'] - log_lst[0]['time'])
+                    userlog_feedback_sum += time_length * density
+                    user_alllog += time_length * density
 
-            if module_obj and (module_obj.getCategory() in sets):
-                sets[module_obj.getCategory()].add(module_id)
-            if module_obj:
-                now_timestamp = log['time']
-                delta = now_timestamp - start_time
-                stat.append(delta)
-                duration = delta
-
-        if enroll_id in new_features:
-            new_features[enroll_id][-1] = userlog_portion
-            #new_features[enroll_id][-2] = float(max(0, idx2 - idx1))
-            new_features[enroll_id][-2] = float(len(sets['sequential'])) / \
-                                course_obj.getCategoryModuleSize('sequential')
-            new_features[enroll_id][-3] = float(len(sets['vertical'])) / \
-                                course_obj.getCategoryModuleSize('vertical')
-            new_features[enroll_id][-4] = float(len(sets['video'])) / \
-                                course_obj.getCategoryModuleSize('video')
-            if len(stat) == 0:
-                new_features[enroll_id][-5] = 0.0
-            else:
-                new_features[enroll_id][-5] = statistics.mean(stat)
-
-            if len(stat) < 2:
-                new_features[enroll_id][-6] = 0.0
-            else:
-                new_features[enroll_id][-6] = statistics.variance(stat)
-
-            new_features[enroll_id][-7]= duration
+        if user_alllog > 1e-4:
+            feedback_feature_lst[enroll_id] = userlog_feedback_sum / user_alllog
         else:
-            miss += 1
+            feedback_feature_lst[enroll_id] = 0.0
 
-    writeFeatureFile(dst_path, list(new_features.values()))
-    print('Miss: %d'%(miss,))
+    xx = [[int(x), y] for (x, y) in feedback_feature_lst.items()]
+    writeFeatureFile(dst_path, xx)
 
 
 def main():
@@ -209,19 +195,21 @@ def main():
     core = Core(obj_filepath)
     print('Done', file=sys.stderr)
 
-    '''
     ori_path = 'Data/sample_train_x_1.csv'
     log_path = 'Data/log_train.csv'
     enroll_path = 'Data/enrollment_train.csv'
-    dst_path = 'Data/feature_train_N_V_M_P3_OLP_x.csv'
+    truth_path = 'Data/truth_train.csv'
+    dst_path = 'Data/FEEDBACK_Portion_train.csv'
     '''
     ori_path = 'Data/sample_test_x.csv'
     log_path = 'Data/log_test.csv'
     enroll_path = 'Data/enrollment_test.csv'
-    dst_path = 'Data/feature_test_N_V_M_P3_OLP_x.csv'
+    truth_path = 'Data/truth_test.csv'
+    dst_path = 'Data/FEEDBACK_test.csv'
+    '''
 
     # appending new feature
-    appendFeatures(core, ori_path, log_path, enroll_path, dst_path)
+    appendFeedback(core, ori_path, log_path, enroll_path, truth_path, dst_path)
 
 
 if __name__ == '__main__':
